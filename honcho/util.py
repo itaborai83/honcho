@@ -7,6 +7,7 @@ import gzip
 import shutil
 import re
 import warnings
+import json
 
 LOGGER_FORMAT = '%(asctime)s:%(levelname)s:%(filename)s:%(funcName)s:%(lineno)d\n\t%(message)s\n'
 LOGGER_FORMAT = '%(levelname)s - %(filename)s:%(funcName)s:%(lineno)s - %(message)s'
@@ -21,7 +22,19 @@ def get_null_logger():
     logger = logging.getLogger('<null>')
     logger.addHandler(logging.NullHandler())
     return logger
-    
+
+def convert_datetime_to_iso_8601_with_z_suffix(dt: dt.datetime) -> str:
+    return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+def transform_to_utc_datetime(dt: dt.datetime) -> dt.datetime:
+    return dt.astimezone(tz=timezone.utc)
+
+def json2buffer(value):
+    return json.dumps(value).encode()
+
+def buffer2json(buf):
+    return json.loads(buf.decode())
+
 def parse_date(txt):
     if txt is None or txt == "":
         return txt

@@ -1,11 +1,13 @@
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Set, Dict, Optional, Any
 from pydantic import BaseModel, Field, validator, ValidationError
+from pydantic.json import timedelta_isoformat
+import honcho.util as util
 
 from honcho.exceptions import *
 
-class WorkerStatus(Enum):
+class WorkerStatus(int, Enum):
     IDLE    = 1
     BUSY    = 2
 
@@ -27,9 +29,15 @@ class Worker(BaseModel):
     curr_work_item_id   : Optional[int]
     worked_on           : List[int] = Field(default_factory=list)
     status              : WorkerStatus = WorkerStatus.IDLE
-    created_at          : datetime = Field(default_factory=datetime.now)
-    updated_at          : datetime = Field(default_factory=datetime.now)
+    created_at          : Optional[datetime] = None
+    updated_at          : Optional[datetime] = None
     
+    class Config:
+        json_encoders = {
+            datetime: util.convert_datetime_to_iso_8601_with_z_suffix,
+            timedelta: timedelta_isoformat,
+        }
+
     def is_transient(self):
         return self.id == 0
     
@@ -98,7 +106,7 @@ class Worker(BaseModel):
         work_item.updated_at = datetime.now()
         work_item.error = error
         
-class WorkItemStatus(Enum):
+class WorkItemStatus(int, Enum):
     READY       = 1
     CHECKED_OUT = 2
     FINISHED    = 3
@@ -111,9 +119,15 @@ class WorkItem(BaseModel):
     error       : Optional[str]
     retry_count : int = 0
     status      : WorkItemStatus = WorkItemStatus.READY
-    created_at  : datetime = Field(default_factory=datetime.now)
-    updated_at  : datetime = Field(default_factory=datetime.now)
+    created_at  : Optional[datetime] = None
+    updated_at  : Optional[datetime] = None
     
+    class Config:
+        json_encoders = {
+            datetime: util.convert_datetime_to_iso_8601_with_z_suffix,
+            timedelta: timedelta_isoformat,
+        }
+        
     def is_transient(self):
         return self.id == 0
     
