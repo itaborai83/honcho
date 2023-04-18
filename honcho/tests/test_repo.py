@@ -44,19 +44,37 @@ class TestRepository(unittest.TestCase):
         is_deleted = self.storage.delete_work_item(work_item.id)
         self.assertTrue(is_deleted)
         
-    def test_it_get_a_work_item(self):
-        now = datetime.now()
+    def test_it_gets_a_work_item(self):
+        now = util.now()
         work_item = WorkItem(name="Work Item 1", payload={'foo': 'bar'}, created_at=now, updated_at=now)
         self.storage.insert_work_item(work_item)
         same_work_item = self.storage.get_work_item(work_item.id)
-        self.assertEqual(work_item.id          , same_work_item.id         )
-        self.assertEqual(work_item.name        , same_work_item.name       )
-        self.assertEqual(work_item.payload     , same_work_item.payload    )
-        self.assertEqual(work_item.error       , same_work_item.error      )
-        self.assertEqual(work_item.retry_count , same_work_item.retry_count)
-        self.assertEqual(work_item.status      , same_work_item.status     )
-        self.assertEqual(work_item.created_at  , same_work_item.created_at )
-        self.assertEqual(work_item.updated_at  , same_work_item.updated_at )
+        self.assertEqual(work_item, same_work_item)
+    
+    def test_it_updates_a_work_item(self):
+        now = util.now()
+        work_item = WorkItem(name="Work Item 1", payload={'foo': 'bar'}, created_at=now, updated_at=now)
+        self.storage.insert_work_item(work_item)
+        work_item = self.storage.get_work_item(work_item.id)
+        work_item.updated_at = datetime(9999, 12, 31, 0, 0, 0)
+        work_item.status = WorkItemStatus.ERROR
+        self.storage.update_work_item(work_item)
+        same_work_item = self.storage.get_work_item(1)
+        self.assertEqual(work_item, same_work_item)
+    
+    def test_it_lists_work_items(self):
+        now = util.now()
+        work_item1 = WorkItem(name="Work Item 1", payload={'foo': 'bar 1'}, created_at=now, updated_at=now)
+        work_item2 = WorkItem(name="Work Item 2", payload={'foo': 'bar 2'}, created_at=now, updated_at=now)
+        work_item3 = WorkItem(name="Work Item 3", payload={'foo': 'bar 3'}, created_at=now, updated_at=now)
+        work_item4 = WorkItem(name="Work Item 4", payload={'foo': 'bar 4'}, created_at=now, updated_at=now)
+        self.storage.insert_work_item(work_item1)
+        self.storage.insert_work_item(work_item2)
+        self.storage.insert_work_item(work_item3)
+        self.storage.insert_work_item(work_item4)
+        work_items = self.storage.list_work_items(first_n=3)
+        self.assertEqual([work_item1, work_item2, work_item3], work_items)
+        
         
 if __name__ == '__main__':
     unittest.main()

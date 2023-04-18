@@ -12,12 +12,15 @@ class Storage:
     MAP_SIZE            = 1024 * 1024
     MAX_SPARE_TXNS      = 1000
     SEQUENCES_DB        = b'SEQUENCES_DB'
-    WORKER_DB           = b'WORKER_DB'
     WORK_ITEM_DB        = b'WORK_ITEM_DB'
-    MAX_DBS             = 3
+    MAX_DBS             = 2
     WORKER_SEQUENCE     = 'SQ_WORKER'
     WORK_ITEM_SEQUENCE  = 'SQ_WORK_ITEM'
     EXPECTED_SEQUENCES  = [WORKER_SEQUENCE, WORK_ITEM_SEQUENCE]
+    PREFIX_SIZE         = 4
+    WORKER_PREFIX       = b'WRKR'
+    WORK_ITEM_PREFIX    = b'WKIT'
+    ERROR_PREFIX        = b'WIER'
     
     def __init__(self, db_path, map_size=MAP_SIZE):
         self.db_path = db_path
@@ -28,7 +31,6 @@ class Storage:
     def _init_db(self):
         self.env             = lmdb.open(self.db_path, map_size=self.MAP_SIZE, max_dbs=self.MAX_DBS, max_spare_txns=self.MAX_SPARE_TXNS)
         self.sequences_db    = self.env.open_db(self.SEQUENCES_DB, integerkey=False)
-        self.worker_db       = self.env.open_db(self.WORKER_DB, integerkey=True)
         self.work_item_db    = self.env.open_db(self.WORK_ITEM_DB, integerkey=True)
         self.env.reader_check()
         self.ensure_sequences_exist(self.EXPECTED_SEQUENCES)
@@ -42,11 +44,14 @@ class Storage:
     ###########################################################################
     ## Helper methods
     ###########################################################################
-    def _int2key(self, i):
-        return i.to_bytes(16, 'big', signed=False)
+    def _int2key(self, prefix, i):
+        return prefix + i.to_bytes(16, 'big', signed=False)
     
     def _key2int(self, buf):
-        return int.from_bytes(buf, 'big', signed=False)
+        prefix = buf[0:self.PREFIX_SIZE]
+        buf = buf[self.PREFIX_SIZE:]
+        i = int.from_bytes(buf, 'big', signed=False)
+        return prefix, i
     
     ###########################################################################
     ## Sequence related methods
@@ -114,7 +119,7 @@ class Storage:
         with self.db_lock,\
              self.env.begin(write=True, db=self.work_item_db) as txn:
             buf = work_item.json().encode()
-            key = self._int2key(work_item.id)
+            key = self._int2key(self.WORK_ITEM_PREFIX, work_item.id)
             txn.put(key, buf)
     
     def get_work_item(self, work_item_id: int) -> Optional[WorkItem]:
@@ -123,7 +128,7 @@ class Storage:
             raise InvalidWorkItemIdError(msg)
         with self.db_lock,\
              self.env.begin(write=True, db=self.work_item_db) as txn:
-            key = self._int2key(work_item_id)
+            key = self._int2key(self.WORK_ITEM_PREFIX, work_item_id)
             result = txn.get(key, None)
             if result:
                 data = json.loads(result.decode())
@@ -136,19 +141,34 @@ class Storage:
             raise InvalidWorkItemIdError(msg)
         with self.db_lock,\
              self.env.begin(write=True, db=self.work_item_db) as txn:
-            key = self._int2key(work_item_id)
+            key = self._int2key(self.WORK_ITEM_PREFIX, work_item_id)
             is_deleted = txn.delete(key)
             return is_deleted
     
     def update_work_item(self, work_item: WorkItem) -> None:
-        if work_item.id != 0:
-            msg = f"work item id #{work_item_id}' is invalid"
-            raise InvalidWorkItemIdError(msg)
+        if work_item.id == 0:
+            msg = f"work item id #{work_item_id}' is transient and can not be updated"
+            raise TransientWorkItemError(msg)
         with self.db_lock,\
              self.env.begin(write=True, db=self.work_item_db) as txn:
             buf = work_item.json().encode()
-            key = self._int2key(work_item.id)
+            key = self._int2key(self.WORK_ITEM_PREFIX, work_item.id)
             txn.put(key, buf)
+    
+    def list_work_items(self, first_n=100) -> List[WorkItem]:
+        with self.db_lock,\
+             self.env.begin(write=True, db=self.work_item_db) as txn:
+            result = []
+            cursor = txn.cursor()
+            for i, (key, value) in enumerate(cursor):
+                if i >= first_n:
+                    return result
+                if not key.startswith(self.WORK_ITEM_PREFIX):
+                    return result
+                data = json.loads(value.decode())
+                work_item = WorkItem(**data)
+                result.append(work_item)
+            return result
     
 """    
 class LMDBQueues:

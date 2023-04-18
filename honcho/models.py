@@ -34,9 +34,17 @@ class Worker(BaseModel):
     
     class Config:
         json_encoders = {
-            datetime: util.convert_datetime_to_iso_8601_with_z_suffix,
-            timedelta: timedelta_isoformat,
+            datetime: util.unparse_datetime,
         }
+        
+    @validator('created_at', pre=True)
+    def validate_created_at(cls, v):
+        return util.parse_datetime(v)
+    
+    @validator('updated_at', pre=True)
+    def validate_updated_at(cls, v):
+        return util.parse_datetime(v)
+
 
     def is_transient(self):
         return self.id == 0
@@ -124,9 +132,16 @@ class WorkItem(BaseModel):
     
     class Config:
         json_encoders = {
-            datetime: util.convert_datetime_to_iso_8601_with_z_suffix,
-            timedelta: timedelta_isoformat,
+            datetime: util.unparse_datetime,
         }
+        
+    @validator('created_at', pre=True)
+    def validate_created_at(cls, v):
+        return util.parse_datetime(v)
+    
+    @validator('updated_at', pre=True)
+    def validate_updated_at(cls, v):
+        return util.parse_datetime(v)
         
     def is_transient(self):
         return self.id == 0
