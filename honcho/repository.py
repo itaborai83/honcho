@@ -2,7 +2,7 @@ import lmdb
 import threading
 import json
 from typing import Optional, List, Set, Dict
-from honcho.models import WorkItem, Worker
+from honcho.models import WorkItem, WorkItemStatus, Worker, WorkerStatus
 from honcho.exceptions import *
 import honcho.util as util
 
@@ -21,7 +21,7 @@ class Storage:
     WORKER_PREFIX       = b'WRKR'
     WORK_ITEM_PREFIX    = b'WKIT'
     ERROR_PREFIX        = b'WIER'
-    
+
     def __init__(self, db_path, map_size=MAP_SIZE):
         self.db_path = db_path
         self.db_lock = threading.RLock()
@@ -30,8 +30,8 @@ class Storage:
 
     def _init_db(self):
         self.env             = lmdb.open(self.db_path, map_size=self.MAP_SIZE, max_dbs=self.MAX_DBS, max_spare_txns=self.MAX_SPARE_TXNS)
-        self.sequences_db    = self.env.open_db(self.SEQUENCES_DB, integerkey=False)
-        self.work_item_db    = self.env.open_db(self.WORK_ITEM_DB, integerkey=True)
+        self.sequences_db    = self.env.open_db(self.SEQUENCES_DB)
+        self.work_item_db    = self.env.open_db(self.WORK_ITEM_DB)
         self.env.reader_check()
         self.ensure_sequences_exist(self.EXPECTED_SEQUENCES)
     
@@ -109,7 +109,7 @@ class Storage:
         return id
                 
     ###########################################################################
-    ## Work Item Related Methods
+    ## Work Item Methods
     ###########################################################################
     def insert_work_item(self, work_item: WorkItem) -> None:
         if work_item.id != 0:
@@ -147,7 +147,7 @@ class Storage:
     
     def update_work_item(self, work_item: WorkItem) -> None:
         if work_item.id == 0:
-            msg = f"work item id #{work_item_id}' is transient and can not be updated"
+            msg = f"work item '{work_item.name}' is transient and can not be updated"
             raise TransientWorkItemError(msg)
         with self.db_lock,\
              self.env.begin(write=True, db=self.work_item_db) as txn:
@@ -155,76 +155,87 @@ class Storage:
             key = self._int2key(self.WORK_ITEM_PREFIX, work_item.id)
             txn.put(key, buf)
     
-    def list_work_items(self, first_n=100) -> List[WorkItem]:
+    def list_work_items(self, status: WorkItemStatus, first_n=100) -> List[WorkItem]:
         with self.db_lock,\
              self.env.begin(write=True, db=self.work_item_db) as txn:
             result = []
             cursor = txn.cursor()
-            for i, (key, value) in enumerate(cursor):
-                if i >= first_n:
-                    return result
+            count = 0
+            for key, value in cursor:
                 if not key.startswith(self.WORK_ITEM_PREFIX):
-                    return result
+                    break
                 data = json.loads(value.decode())
                 work_item = WorkItem(**data)
+                if work_item.status != status:
+                    continue
+                if count >= first_n:
+                    break
                 result.append(work_item)
+                count += 1
             return result
+            
+    ###########################################################################
+    ## Worker Methods
+    ###########################################################################
+    def insert_worker(self, worker: Worker) -> None:
+        if worker.id != 0:
+            msg = f"worker '{worker.name}' is not transient and cannot be created"
+            raise WorkerNotTransientError(msg)
+        worker.id = self.nextval(self.WORKER_SEQUENCE)
+        with self.db_lock,\
+             self.env.begin(write=True, db=self.work_item_db) as txn:
+            buf = worker.json().encode()
+            key = self._int2key(self.WORKER_PREFIX, worker.id)
+            txn.put(key, buf)
+
+    def delete_worker(self, worker_id: int) -> bool:
+        if worker_id == 0:
+            msg = f"worker id #{worker_id}' is invalid"
+            raise InvalidWorkerIdError(msg)
+        with self.db_lock,\
+             self.env.begin(write=True, db=self.work_item_db) as txn:
+            key = self._int2key(self.WORKER_PREFIX, worker_id)
+            is_deleted = txn.delete(key)
+            return is_deleted
     
-"""    
-class LMDBQueues:
-    def __init__(self, db_path):
-        self.env = lmdb.open(db_path, map_size=10485760)
-        self.app_state_db    = self.env.open_db(self.APP_STATE_DB  )
-        self.worker_db       = self.env.open_db(self.WORKER_DB     )
-        self.ready_db        = self.env.open_db(self.READY_DB      )
-        self.checked_out_db  = self.env.open_db(self.CHECKED_OUT_DB)
-        self.finished_db     = self.env.open_db(self.FINISHED_DB   )
-        self.error_db        = self.env.open_db(self.ERROR_DB      )
+    def get_worker(self, worker_id: int) -> Optional[Worker]:
+        if worker_id == 0:
+            msg = f"worker id #{worker_id}' is invalid"
+            raise InvalidWorkerIdError(msg)
+        with self.db_lock,\
+             self.env.begin(write=True, db=self.work_item_db) as txn:
+            key = self._int2key(self.WORKER_PREFIX, worker_id)
+            result = txn.get(key, None)
+            if result:
+                data = json.loads(result.decode())
+                return Worker(**data)
+            return None
         
-        with self.env.begin(write=True, db=self.next_id_db) as txn:
-            if txn.get(b'id') is None:
-                txn.put(b'id', b'0')
+    def update_worker(self, worker: Worker) -> None:
+        if worker.id == 0:
+            msg = f"worker '{worker.name}' is transient and can not be updated"
+            raise TransientWorkerError(msg)
+        with self.db_lock,\
+             self.env.begin(write=True, db=self.work_item_db) as txn:
+            buf = worker.json().encode()
+            key = self._int2key(self.WORKER_PREFIX, worker.id)
+            txn.put(key, buf)
 
-    def _get_next_id(self):
-        with self.env.begin(write=True, db=self.next_id_db) as txn:
-            next_id = int(txn.get(b'id'))
-            txn.put(b'id', str(next_id + 1).encode())
-        return next_id
-
-    def add_to_ready_queue(self, value):
-        key = str(self._get_next_id()).encode()
-        with self.env.begin(write=True, db=self.ready_db) as txn:
-            txn.put(key, value)
-
-    def add_to_finished_queue(self, key, value):
-        with self.env.begin(write=True, db=self.finished_db) as txn:
-            txn.put(key, value)
-
-    def add_to_errored_queue(self, key, value):
-        with self.env.begin(write=True, db=self.errored_db) as txn:
-            txn.put(key, value)
-
-    def move_to_finished_queue(self, key):
-        with self.env.begin(write=True, db=self.ready_db) as txn1, \
-             self.env.begin(write=True, db=self.finished_db) as txn2:
-            value = txn1.pop(key)
-            if value is not None:
-                txn2.put(key, value)
-
-    def move_to_errored_queue(self, key):
-        with self.env.begin(write=True, db=self.ready_db) as txn1, \
-             self.env.begin(write=True, db=self.errored_db) as txn2:
-            value = txn1.pop(key)
-            if value is not None:
-                txn2.put(key, value)
-
-    def move_to_ready_queue(self, key):
-        with self.env.begin(write=True, db=self.errored_db) as txn1, \
-             self.env.begin(write=True, db=self.ready_db) as txn2:
-            value = txn1.pop(key)
-            if value is not None:
-                txn2.put(str(self._get_next_id()).encode(), value)
-
-    def close(self):
-        self.env.close()
-"""
+    def list_workers(self, status: WorkerStatus, first_n=100) -> List[Worker]:
+        with self.db_lock,\
+             self.env.begin(write=True, db=self.work_item_db) as txn:
+            result = []
+            cursor = txn.cursor()
+            count = 0
+            for key, value in cursor:
+                if not key.startswith(self.WORKER_PREFIX):
+                    break
+                data = json.loads(value.decode())
+                worker = Worker(**data)
+                if worker.status != status:
+                    continue
+                if count >= first_n:
+                    break
+                result.append(worker)
+                count += 1
+            return result
