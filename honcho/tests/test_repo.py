@@ -5,17 +5,8 @@ import shutil
 from honcho.models import *
 from honcho.repository import *
 
-class TestStorage(unittest.TestCase):
-    REPO_PATH = 'DATA/unittest-repo.lmdb'
-    
-    def setUp(self):
-        self.storage = Storage(self.REPO_PATH)
-        #self.maxDiff = None
-        
-    def tearDown(self):
-        self.storage.close()
-        shutil.rmtree(self.REPO_PATH, ignore_errors=False)
-    
+class CommonStorageTests:
+
     def test_it_retrieves_the_next_worker_id(self):
         nextval = self.storage.nextval('SQ_WORKER')
         currval = self.storage.currval('SQ_WORKER')
@@ -154,6 +145,26 @@ class TestStorage(unittest.TestCase):
         
         workers = self.storage.list_workers(WorkerStatus.IDLE, first_n=3)
         self.assertEqual([worker1, worker2, worker4], workers)
+
+class TestStorage(unittest.TestCase, CommonStorageTests):
+    
+    REPO_PATH = 'DATA/unittest-repo.lmdb'
+    
+    def setUp(self):
+        self.storage = Storage(self.REPO_PATH)
+        #self.maxDiff = None
+        
+    def tearDown(self):
+        self.storage.close()
+        shutil.rmtree(self.REPO_PATH, ignore_errors=False)
+    
+class TestMockStorage(unittest.TestCase, CommonStorageTests):
+    
+    def setUp(self):
+        self.storage = MockStorage()
+        
+    def tearDown(self):
+        self.storage.close()
 
 if __name__ == '__main__':
     unittest.main()

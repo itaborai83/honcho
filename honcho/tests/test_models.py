@@ -31,6 +31,11 @@ class TestWorkItem(unittest.TestCase):
         work_item = WorkItem(id=1, name="Work Item 1", status=WorkItemStatus.FINISHED)
         with self.assertRaises(WorkItemShouldNotBeFinishedError):
             work_item.reset()
+    
+    def test_it_roundtrips_as_json(self):
+        work_item = WorkItem(id=1, name="Work Item 1", status=WorkItemStatus.FINISHED)
+        same_work_item = WorkItem.from_json(work_item.json())
+        self.assertEqual(work_item, same_work_item)
         
 class TestWorker(unittest.TestCase):
     
@@ -132,6 +137,11 @@ class TestWorker(unittest.TestCase):
         worker.work_on(work_item1)
         with self.assertRaises(WorkItemNotReadyError):
             worker.error_working_on(work_item2, "unexpected error")
+    
+    def test_it_roundtrips_as_json(self):
+        worker = Worker(id=1, name="Test Worker 1")
+        same_worker = Worker.from_json(worker.json())
+        self.assertEqual(worker, same_worker)
         
 if __name__ == '__main__':
     unittest.main()

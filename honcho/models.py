@@ -1,8 +1,10 @@
 from enum import Enum
+import json
 from datetime import datetime, timedelta
 from typing import List, Set, Dict, Optional, Any
 from pydantic import BaseModel, Field, validator, ValidationError
 from pydantic.json import timedelta_isoformat
+from pydantic.tools import parse_obj_as
 import honcho.util as util
 
 from honcho.exceptions import *
@@ -45,7 +47,14 @@ class Worker(BaseModel):
     def validate_updated_at(cls, v):
         return util.parse_datetime(v)
 
-
+    @classmethod
+    def from_json(klass, buf):
+        if buf is None:
+            return None
+        data = json.loads(buf)
+        obj = parse_obj_as(klass, data)
+        return obj
+        
     def is_transient(self):
         return self.id == 0
     
@@ -142,6 +151,14 @@ class WorkItem(BaseModel):
     @validator('updated_at', pre=True)
     def validate_updated_at(cls, v):
         return util.parse_datetime(v)
+    
+    @classmethod
+    def from_json(klass, buf):
+        if buf is None:
+            return None
+        data = json.loads(buf)
+        obj = parse_obj_as(klass, data)
+        return obj
         
     def is_transient(self):
         return self.id == 0

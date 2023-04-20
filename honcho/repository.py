@@ -239,3 +239,123 @@ class Storage:
                 result.append(worker)
                 count += 1
             return result
+            
+class MockStorage:
+
+    WORKER_SEQUENCE     = 'SQ_WORKER'
+    WORK_ITEM_SEQUENCE  = 'SQ_WORK_ITEM'
+    EXPECTED_SEQUENCES  = [WORKER_SEQUENCE, WORK_ITEM_SEQUENCE]
+    
+    def __init__(self):
+        self.sequences = { self.WORKER_SEQUENCE: 0, self.WORK_ITEM_SEQUENCE: 0 }
+        self.workers = {}
+        self.work_items = {}
+    
+    ###########################################################################
+    ## General
+    ###########################################################################
+    def close(self):
+        pass
+        
+    ###########################################################################
+    ## Sequence related methods
+    ###########################################################################
+        
+    def nextval(self, sequence_name):
+        self.sequences[sequence_name] += 1
+        return self.sequences[sequence_name]
+
+    def currval(self, sequence_name):
+        return self.sequences[sequence_name]
+                
+    ###########################################################################
+    ## Work Item Methods
+    ###########################################################################
+    def insert_work_item(self, work_item: WorkItem) -> None:
+        if work_item.id != 0:
+            msg = f"work item '{work_item.name}' is not transient and cannot be created"
+            raise WorkItemNotTransientError(msg)
+        work_item.id = self.nextval(self.WORK_ITEM_SEQUENCE)
+        self.work_items[ work_item.id ] = work_item.json()
+    
+    def get_work_item(self, work_item_id: int) -> Optional[WorkItem]:
+        if work_item_id == 0:
+            msg = f"work item id #{work_item_id}' is invalid"
+            raise InvalidWorkItemIdError(msg)
+        buf = self.work_items.get(work_item_id)
+        return WorkItem.from_json(buf)
+            
+    def delete_work_item(self, work_item_id: int) -> bool:
+        if work_item_id == 0:
+            msg = f"work item id #{work_item_id}' is invalid"
+            raise InvalidWorkItemIdError(msg)
+        is_present = work_item_id in self.work_items
+        if is_present:
+            del self.work_items[work_item_id]
+            return True
+        return False
+    
+    def update_work_item(self, work_item: WorkItem) -> None:
+        if work_item.id == 0:
+            msg = f"work item '{work_item.name}' is transient and can not be updated"
+            raise TransientWorkItemError(msg)
+        self.work_items[ work_item.id ] = work_item.json()
+    
+    def list_work_items(self, status: WorkItemStatus, first_n=100) -> List[WorkItem]:
+        result = []
+        count = 0
+        for buf in self.work_items.values():
+            work_item = WorkItem.from_json(buf)
+            if work_item.status != status:
+                continue
+            if count >= first_n:
+                break
+            result.append(work_item)
+            count += 1
+        return result
+            
+    ###########################################################################
+    ## Worker Methods
+    ###########################################################################
+    def insert_worker(self, worker: Worker) -> None:
+        if worker.id != 0:
+            msg = f"worker '{worker.name}' is not transient and cannot be created"
+            raise WorkerNotTransientError(msg)
+        worker.id = self.nextval(self.WORKER_SEQUENCE)
+        self.workers[ worker.id ] = worker.json()
+
+    def delete_worker(self, worker_id: int) -> bool:
+        if worker_id == 0:
+            msg = f"worker id #{worker_id}' is invalid"
+            raise InvalidWorkerIdError(msg)
+        is_present = worker_id in self.workers
+        if is_present:
+            del self.workers[worker_id]
+            return True
+        return False
+    
+    def get_worker(self, worker_id: int) -> Optional[Worker]:
+        if worker_id == 0:
+            msg = f"worker id #{worker_id}' is invalid"
+            raise InvalidWorkerIdError(msg)
+        buf = self.workers.get(worker_id)
+        return Worker.from_json(buf)
+        
+    def update_worker(self, worker: Worker) -> None:
+        if worker.id == 0:
+            msg = f"worker '{worker.name}' is transient and can not be updated"
+            raise TransientWorkerError(msg)
+        self.workers[ worker.id ] = worker.json()
+        
+    def list_workers(self, status: WorkerStatus, first_n=100) -> List[Worker]:
+        result = []
+        count = 0
+        for buf in self.workers.values():
+            worker = Worker.from_json(buf)
+            if worker.status != status:
+                continue
+            if count >= first_n:
+                break
+            result.append(worker)
+            count += 1
+        return result
