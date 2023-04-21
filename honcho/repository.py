@@ -14,14 +14,22 @@ class BaseCollection:
     PREFIX_SEPARATOR    = b':'
     COLL_PREFIX_SIZE    = 4
     
-    def __init__(self, coll_prefix):
+    def __init__(self, coll_prefix, int_key=False):
         self.coll_prefix = coll_prefix.encode()
+        self.int_key = int_key
         assert len(self.coll_prefix) == self.COLL_PREFIX_SIZE
                 
-    def _encode_key(self, key):
+    def _encode_key(self, key, int_key=None):
+        if int_key is None:
+            int_key = self.int_key
+        if int_key:
+            assert 0 <= key <= sys.maxsize
+            return self.coll_prefix + self.PREFIX_SEPARATOR + key.to_bytes(16, 'big', signed=False)
         return self.coll_prefix + self.PREFIX_SEPARATOR + key.encode()
     
-    def _decode_key(self, buf):
+    def _decode_key(self, buf, int_key=None):
+        if int_key is None:
+            int_key = self.int_key        
         # extract the collection prefix from the key buffer
         prefix = buf[0:self.COLL_PREFIX_SIZE]
         # check if the prefix matches the prefix collection
@@ -31,7 +39,11 @@ class BaseCollection:
             return prefix, None
         # extract the key itself
         buf = buf[self.COLL_PREFIX_SIZE + 1:]
-        key = buf.decode()
+        if int_key:
+            key = int.from_bytes(buf, 'big', signed=False)
+            assert 0 <= key <= sys.maxsize
+        else:
+            key = buf.decode()
         return prefix, key
         
     def _encode_value(self, obj):
@@ -59,15 +71,15 @@ class LmdbCollection(BaseCollection):
     
     KEYRANGE = '__keyrange__'
     
-    def __init__(self, coll_prefix):
-        super().__init__(coll_prefix)
+    def __init__(self, coll_prefix, int_key=False):
+        super().__init__(coll_prefix, int_key)
         self.txn = None
 
     def _update_keyrange_for_put(self, key_buf):
         # can run after insertion took place
         
         # retrieve the key range
-        range_key_buf = self._encode_key(self.KEYRANGE)
+        range_key_buf = self._encode_key(self.KEYRANGE, int_key=False)
         value_buf = self.txn.get(range_key_buf)
         
         # handle first put
@@ -101,7 +113,7 @@ class LmdbCollection(BaseCollection):
             return
         
         # retrieve the key range
-        range_key_buf = self._encode_key(self.KEYRANGE)
+        range_key_buf = self._encode_key(self.KEYRANGE, int_key=False)
         value_buf = cursor.get(range_key_buf)
         # there has to be a key range because the deleted key exists
         assert value_buf is not None 
@@ -171,7 +183,7 @@ class LmdbCollection(BaseCollection):
     def list(self, filter=None, top_n=sys.maxsize, reverse=False):
         
         # retrieve the key range
-        range_key_buf = self._encode_key(self.KEYRANGE)
+        range_key_buf = self._encode_key(self.KEYRANGE, int_key=False)
         value_buf = self.txn.get(range_key_buf)
         if value_buf is None:
             # no key range means no values present
@@ -194,8 +206,8 @@ class LmdbCollection(BaseCollection):
 
 class MockCollection(BaseCollection):
     
-    def __init__(self, coll_prefix):
-        super().__init__(coll_prefix)
+    def __init__(self, coll_prefix, int_key=False):
+        super().__init__(coll_prefix, int_key)
         self.data = {}
         
     def put(self, key, value):
@@ -427,6 +439,7 @@ class LmdbSequenceManager(BaseSequenceManager):
         self.collection.txn = txn
     
     def ensure_sequences_exist(self, sequence_names):
+        assert isinstance(sequence_names, list)
         for sequence_name in sequence_names:
             value = self.collection.get(sequence_name)
             if value is None:
@@ -434,7 +447,7 @@ class LmdbSequenceManager(BaseSequenceManager):
         
     def nextval(self, sequence_name):
         value = self.collection.get(sequence_name)
-        assert value >= 0
+        assert value is not None and value >= 0, f"sequence '{sequence_name}' does not exist"
         self.collection.put(sequence_name, value+1)
         return value+1
         
@@ -450,6 +463,7 @@ class MockSequenceManager(BaseSequenceManager):
         self.collection = {}
         
     def ensure_sequences_exist(self, sequence_names):
+        assert isinstance(sequence_names, list)
         for sequence_name in sequence_names:
             value = self.collection.get(sequence_name)
             if value is None:
@@ -457,7 +471,7 @@ class MockSequenceManager(BaseSequenceManager):
         
     def nextval(self, sequence_name):
         value = self.collection.get(sequence_name)
-        assert value >= 0
+        assert value is not None and value >= 0, f"sequence '{sequence_name}' does not exist"
         self.collection[sequence_name] = value+1
         return value+1
         
@@ -465,6 +479,47 @@ class MockSequenceManager(BaseSequenceManager):
         value = self.collection.get(sequence_name)
         assert value is not None and value >= 0
         return value
+
+class AutoIncrementCollection:
+
+    def __init__(self, collection, sequence_mngr, sequence_name):
+        assert collection.int_key
+        self.collection = collection
+        self.sequence_mngr = sequence_mngr
+        self.sequence_name = sequence_name
+    
+    @property
+    def txn(self):
+        return self.collection.txn
+    
+    @txn.setter
+    def txn(self, txn):
+        self.sequence_mngr.txn = txn
+        self.collection.txn = txn
+        
+    def insert(self, obj):
+        assert obj.id is None or obj.id == 0
+        obj.id = self.sequence_mngr.nextval(self.sequence_name)
+        self.collection.put(obj.id, obj)
+    
+    def update(self, obj):
+        assert obj.id is not None and obj.id > 0
+        self.collection.put(obj.id, obj)
+    
+    def get(self, id):
+        assert id is not None and id > 0
+        return self.collection.get(id)
+
+    def delete(self, id):
+        assert id is not None and id > 0
+        return self.collection.delete(id)
+        
+    def list(self, filter=None, top_n=sys.maxsize, reverse=False):
+        return self.collection.list(
+            filter  = filter
+        ,   top_n   = top_n
+        ,   reverse = reverse
+        )
 
 """
 class LmdbBaseCollection:
