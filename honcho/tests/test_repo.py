@@ -1,10 +1,95 @@
 import unittest
 import shutil
-
+import lmdb
 
 from honcho.models import *
 from honcho.repository import *
 
+class LmdbCollectionTest(unittest.TestCase):
+    
+    REPO_PATH = 'DATA/unittest-repo.lmdb'
+    MAP_SIZE            = 1024 * 1024
+    MAX_SPARE_TXNS      = 1000
+    
+    def setUp(self):
+        self.env = lmdb.open(
+            self.REPO_PATH
+        ,   map_size        = self.MAP_SIZE
+        ,   max_spare_txns  = self.MAX_SPARE_TXNS
+        )
+        self.env.reader_check()
+        self.collection = LmdbCollection('TEST')
+        self.collection.txn = self.env.begin(write=True)
+        
+    def tearDown(self):
+        self.collection.txn.abort()
+        self.env.close()
+        shutil.rmtree(self.REPO_PATH, ignore_errors=False)
+        
+    def test_it_encodes_keys(self):
+        key_buf = self.collection._encode_key('test-key')
+        self.assertEqual(key_buf, b'TEST:test-key')
+    
+    def test_it_decodes_keys_within_the_collection(self):
+        prefix, key = self.collection._decode_key(b'TEST:test-key')
+        self.assertEqual(prefix, b'TEST')
+        self.assertEqual(key, 'test-key')
+
+    def test_it_decodes_keys_outside_the_collection(self):
+        prefix, key = self.collection._decode_key(b'XXXX:test-key')
+        self.assertEqual(prefix, b'XXXX')
+        self.assertEqual(key, None)
+        
+    def test_it_puts_a_value(self):
+       self.collection.put('test-key', {'test': 'value'})
+       value = self.collection.get('test-key')
+       self.assertEqual(value, {'test': 'value'})
+   
+    def test_it_deletes_a_value(self):
+       self.collection.put('test-key', {'test': 'value'})
+       was_deleted = self.collection.delete('test-key')
+       value = self.collection.get('test-key')
+       self.assertTrue(was_deleted)
+       self.assertEqual(value, None)
+   
+    def test_it_lists_values(self):
+        self.collection.put('test-key-a', 'value-a')
+        self.collection.put('test-key-c', 'value-c')
+        self.collection.put('test-key-e', 'value-e')
+        self.collection.put('test-key-d', 'value-d')
+        self.collection.put('test-key-b', 'value-b')
+        objs = self.collection.list()
+        self.assertEqual(objs, ['value-a', 'value-b', 'value-c', 'value-d', 'value-e'])
+        
+    def test_it_lists_values_in_reverse_order(self):
+        self.collection.put('test-key-a', 'value-a')
+        self.collection.put('test-key-c', 'value-c')
+        self.collection.put('test-key-e', 'value-e')
+        self.collection.put('test-key-d', 'value-d')
+        self.collection.put('test-key-b', 'value-b')
+        objs = self.collection.list(reverse=True)
+        objs.reverse()
+        self.assertEqual(objs, ['value-a', 'value-b', 'value-c', 'value-d', 'value-e'])
+
+    def test_it_lists_top_n_values(self):
+        self.collection.put('test-key-a', 'value-a')
+        self.collection.put('test-key-c', 'value-c')
+        self.collection.put('test-key-e', 'value-e')
+        self.collection.put('test-key-d', 'value-d')
+        self.collection.put('test-key-b', 'value-b')
+        objs = self.collection.list(top_n=3)
+        self.assertEqual(objs, ['value-a', 'value-b', 'value-c'])
+
+    def test_it_lists_top_n_values_in_reverse_order(self):
+        self.collection.put('test-key-a', 'value-a')
+        self.collection.put('test-key-c', 'value-c')
+        self.collection.put('test-key-e', 'value-e')
+        self.collection.put('test-key-d', 'value-d')
+        self.collection.put('test-key-b', 'value-b')
+        objs = self.collection.list(top_n=3, reverse=True)
+        self.assertEqual(objs, ['value-e', 'value-d', 'value-c'])
+        
+"""
 class CommonStorageTests:
 
     def test_it_retrieves_the_next_worker_id(self):
@@ -165,6 +250,4 @@ class TestMockStorage(unittest.TestCase, CommonStorageTests):
         
     def tearDown(self):
         self.storage.close()
-
-if __name__ == '__main__':
-    unittest.main()
+"""
