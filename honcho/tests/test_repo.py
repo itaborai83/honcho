@@ -5,27 +5,8 @@ import lmdb
 from honcho.models import *
 from honcho.repository import *
 
-class LmdbCollectionTest(unittest.TestCase):
+class CommonCollectionTests:
     
-    REPO_PATH = 'DATA/unittest-repo.lmdb'
-    MAP_SIZE            = 1024 * 1024
-    MAX_SPARE_TXNS      = 1000
-    
-    def setUp(self):
-        self.env = lmdb.open(
-            self.REPO_PATH
-        ,   map_size        = self.MAP_SIZE
-        ,   max_spare_txns  = self.MAX_SPARE_TXNS
-        )
-        self.env.reader_check()
-        self.collection = LmdbCollection('TEST')
-        self.collection.txn = self.env.begin(write=True)
-        
-    def tearDown(self):
-        self.collection.txn.abort()
-        self.env.close()
-        shutil.rmtree(self.REPO_PATH, ignore_errors=False)
-        
     def test_it_encodes_keys(self):
         key_buf = self.collection._encode_key('test-key')
         self.assertEqual(key_buf, b'TEST:test-key')
@@ -88,7 +69,104 @@ class LmdbCollectionTest(unittest.TestCase):
         self.collection.put('test-key-b', 'value-b')
         objs = self.collection.list(top_n=3, reverse=True)
         self.assertEqual(objs, ['value-e', 'value-d', 'value-c'])
+    
+    def test_it_lists_filtered_values(self):
+        def filter(value):
+            return value[-1] in ('a', 'c', 'e')
         
+        self.collection.put('test-key-a', 'value-a')
+        self.collection.put('test-key-c', 'value-c')
+        self.collection.put('test-key-e', 'value-e')
+        self.collection.put('test-key-d', 'value-d')
+        self.collection.put('test-key-b', 'value-b')
+        
+        objs = self.collection.list(filter=filter)
+        self.assertEqual(objs, ['value-a', 'value-c', 'value-e'])
+
+class LmdbCollectionTest(unittest.TestCase, CommonCollectionTests):
+
+    REPO_PATH = 'DATA/unittest-repo.lmdb'
+    MAP_SIZE            = 1024 * 1024
+    MAX_SPARE_TXNS      = 1000
+    
+    def setUp(self):
+        self.env = lmdb.open(
+            self.REPO_PATH
+        ,   map_size        = self.MAP_SIZE
+        ,   max_spare_txns  = self.MAX_SPARE_TXNS
+        )
+        self.env.reader_check()
+        self.collection = LmdbCollection('TEST')
+        self.collection.txn = self.env.begin(write=True)
+        
+    def tearDown(self):
+        self.collection.txn.abort()
+        self.env.close()
+        shutil.rmtree(self.REPO_PATH, ignore_errors=False)
+
+class MockCollectionTest(unittest.TestCase, CommonCollectionTests):
+    
+    def setUp(self):
+        self.collection = MockCollection('TEST')
+        
+    def tearDown(self):
+        pass
+        
+class CommonSequenceManagerTests:
+
+    def test_sequence_creation(self):
+        with self.assertRaises(AssertionError):
+            self.sequence_mngr.currval('test-seqn-1')
+        with self.assertRaises(AssertionError):
+            self.sequence_mngr.currval('test-seqn-2')
+        
+        self.sequence_mngr.ensure_sequences_exist(['test-seqn-1', 'test-seqn-2'])
+        
+        self.assertEqual(self.sequence_mngr.currval('test-seqn-1'), 0)
+        self.assertEqual(self.sequence_mngr.currval('test-seqn-2'), 0)
+        
+        self.assertEqual(self.sequence_mngr.nextval('test-seqn-1'), 1)
+        self.assertEqual(self.sequence_mngr.nextval('test-seqn-2'), 1)
+        
+        self.assertEqual(self.sequence_mngr.currval('test-seqn-1'), 1)
+        self.assertEqual(self.sequence_mngr.currval('test-seqn-2'), 1)
+        
+        self.sequence_mngr.ensure_sequences_exist(['test-seqn-1', 'test-seqn-2'])
+
+        self.assertEqual(self.sequence_mngr.nextval('test-seqn-1'), 2)
+        self.assertEqual(self.sequence_mngr.nextval('test-seqn-2'), 2)
+        self.assertEqual(self.sequence_mngr.nextval('test-seqn-2'), 3)
+        self.assertEqual(self.sequence_mngr.nextval('test-seqn-1'), 3)
+
+class TestLmdbSequenceManager(unittest.TestCase, CommonSequenceManagerTests):
+
+    REPO_PATH      = 'DATA/unittest-repo.lmdb'
+    MAP_SIZE       = 1024 * 1024
+    MAX_SPARE_TXNS = 1000
+    
+    def setUp(self):
+        self.env = lmdb.open(
+            self.REPO_PATH
+        ,   map_size        = self.MAP_SIZE
+        ,   max_spare_txns  = self.MAX_SPARE_TXNS
+        )
+        self.env.reader_check()
+        self.sequence_mngr = LmdbSequenceManager()
+        self.sequence_mngr.txn = self.env.begin(write=True)
+        
+    def tearDown(self):
+        self.sequence_mngr.txn.abort()
+        self.env.close()
+        shutil.rmtree(self.REPO_PATH, ignore_errors=False)
+
+class TestMockSequenceManager(unittest.TestCase, CommonSequenceManagerTests):
+    
+    def setUp(self):
+        self.sequence_mngr = MockSequenceManager()
+        
+    def tearDown(self):
+        self.sequence_mngr = None
+
 """
 class CommonStorageTests:
 

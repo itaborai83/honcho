@@ -11,6 +11,29 @@ import honcho.util as util
 
 class BaseCollection:
     
+    PREFIX_SEPARATOR    = b':'
+    COLL_PREFIX_SIZE    = 4
+    
+    def __init__(self, coll_prefix):
+        self.coll_prefix = coll_prefix.encode()
+        assert len(self.coll_prefix) == self.COLL_PREFIX_SIZE
+                
+    def _encode_key(self, key):
+        return self.coll_prefix + self.PREFIX_SEPARATOR + key.encode()
+    
+    def _decode_key(self, buf):
+        # extract the collection prefix from the key buffer
+        prefix = buf[0:self.COLL_PREFIX_SIZE]
+        # check if the prefix matches the prefix collection
+        if prefix != self.coll_prefix:
+            # when there is a mismatch, there is no pointing in trying to parse key
+            # because the object does not belong to this collection
+            return prefix, None
+        # extract the key itself
+        buf = buf[self.COLL_PREFIX_SIZE + 1:]
+        key = buf.decode()
+        return prefix, key
+        
     def _encode_value(self, obj):
         return pickle.dumps(obj)
     
@@ -34,32 +57,12 @@ class BaseCollection:
 
 class LmdbCollection(BaseCollection):
     
-    PREFIX_SEPARATOR    = b':'
-    COLL_PREFIX_SIZE    = 4
-    KEYRANGE            = '__keyrange__'
+    KEYRANGE = '__keyrange__'
     
     def __init__(self, coll_prefix):
-        super().__init__()
-        self.coll_prefix = coll_prefix.encode()
-        assert len(self.coll_prefix) == self.COLL_PREFIX_SIZE
+        super().__init__(coll_prefix)
         self.txn = None
-        
-    def _encode_key(self, key):
-        return self.coll_prefix + self.PREFIX_SEPARATOR + key.encode()
-    
-    def _decode_key(self, buf):
-        # extract the collection prefix from the key buffer
-        prefix = buf[0:self.COLL_PREFIX_SIZE]
-        # check if the prefix matches the prefix collection
-        if prefix != self.coll_prefix:
-            # when there is a mismatch, there is no pointing in trying to parse key
-            # because the object does not belong to this collection
-            return prefix, None
-        # extract the key itself
-        buf = buf[self.COLL_PREFIX_SIZE + 1:]
-        key = buf.decode()
-        return prefix, key
-    
+
     def _update_keyrange_for_put(self, key_buf):
         # can run after insertion took place
         
@@ -189,6 +192,41 @@ class LmdbCollection(BaseCollection):
         )
         return it.run()
 
+class MockCollection(BaseCollection):
+    
+    def __init__(self, coll_prefix):
+        super().__init__(coll_prefix)
+        self.data = {}
+        
+    def put(self, key, value):
+        key_buf = self._encode_key(key)
+        value_buf = self._encode_value(value)
+        self.data[key_buf] = value_buf
+    
+    def get(self, key):
+        key_buf = self._encode_key(key)
+        value_buf = self.data.get(key_buf)
+        value = self._decode_value(value_buf)
+        return value
+    
+    def delete(self, key):
+        key_buf = self._encode_key(key)
+        was_deleted = key_buf in self.data
+        if was_deleted:
+            del self.data[key_buf]
+        return was_deleted
+        
+    def list(self, filter=None, top_n=sys.maxsize, reverse=False):
+        if len(self.data) == 0:
+            return []
+        
+        it = MockCollectionIterator(
+            collection      = self
+        ,   filter          = filter
+        ,   top_n           = top_n
+        ,   reverse         = reverse
+        )
+        return it.run()
 
 class LmdbCollectionIterator:
     
@@ -282,7 +320,152 @@ class LmdbCollectionIterator:
                 continue
         
         return self.results
+
+class MockCollectionIterator:
         
+    def __init__(self, collection, filter=None, top_n=sys.maxsize, reverse=False):
+        self.collection     = collection
+        self.filter         = filter
+        self.top_n          = top_n
+        self.reverse        = reverse
+        self.results        = []
+        self.count          = 0
+        self.idx            = 0 if not reverse else len(collection.data)-1
+        self.keys           = None
+        
+    def start(self):
+        if len(self.collection.data) == 0:
+            positioned = False
+            return positioned
+        self.results = []
+        self.keys    = list(sorted(self.collection.data.keys()))
+        self.count   = 0
+        positioned   = True
+        return positioned
+        
+    def advance(self):
+        if not self.reverse:
+            self.idx += 1
+            positioned = self.idx < len(self.collection.data)
+        else:
+            self.idx -= 1
+            positioned = self.idx >= 0
+        return positioned
+    
+    def filter_value(self, value):
+        if self.filter is None:
+            return True
+        return self.filter(value)
+    
+    def update_count(self):
+        self.count += 1
+        count_reached = self.count >= self.top_n
+        return count_reached
+        
+    def run(self):
+        positioned = self.start()
+        if not positioned:
+            return self.results
+        
+        bail_out = False
+        advance_cursor = False
+        while True: 
+            
+            if bail_out:
+                break
+            
+            if advance_cursor:
+                positioned = self.advance()
+                if not positioned:
+                    bail_out = True
+                    continue
+            
+            advance_cursor = True
+            
+            # parse the object
+            key_buf = self.keys[self.idx]
+            value_buf = self.collection.data[key_buf]
+            value = self.collection._decode_value(value_buf)
+            
+            # apply filter
+            if not self.filter_value(value):
+                continue
+            
+            # add object to the result
+            self.results.append(value)
+            count_reached = self.update_count()
+            if count_reached:
+                bail_out = True
+                continue
+        
+        return self.results
+
+
+class BaseSequenceManager:
+            
+    def ensure_sequences_exist(self, sequence_names):
+        raise NotImplementedError
+        
+    def nextval(self, sequence_name):
+        raise NotImplementedError
+        
+    def currval(self, sequence_name):
+        raise NotImplementedError
+
+class LmdbSequenceManager(BaseSequenceManager):
+    
+    def __init__(self, coll_prefix='SEQN'):
+        super().__init__()
+        self.collection = LmdbCollection(coll_prefix)
+    
+    @property
+    def txn(self):
+        return self.collection.txn
+    
+    @txn.setter
+    def txn(self, txn):
+        self.collection.txn = txn
+    
+    def ensure_sequences_exist(self, sequence_names):
+        for sequence_name in sequence_names:
+            value = self.collection.get(sequence_name)
+            if value is None:
+                self.collection.put(sequence_name, 0)
+        
+    def nextval(self, sequence_name):
+        value = self.collection.get(sequence_name)
+        assert value >= 0
+        self.collection.put(sequence_name, value+1)
+        return value+1
+        
+    def currval(self, sequence_name):
+        value = self.collection.get(sequence_name)
+        assert value is not None and value >= 0
+        return value
+        
+class MockSequenceManager(BaseSequenceManager):
+    
+    def __init__(self):
+        super().__init__()
+        self.collection = {}
+        
+    def ensure_sequences_exist(self, sequence_names):
+        for sequence_name in sequence_names:
+            value = self.collection.get(sequence_name)
+            if value is None:
+                self.collection[sequence_name] = 0
+        
+    def nextval(self, sequence_name):
+        value = self.collection.get(sequence_name)
+        assert value >= 0
+        self.collection[sequence_name] = value+1
+        return value+1
+        
+    def currval(self, sequence_name):
+        value = self.collection.get(sequence_name)
+        assert value is not None and value >= 0
+        return value
+
 """
 class LmdbBaseCollection:
     
@@ -392,19 +575,7 @@ class LmdbBaseCollection:
 
 
 
-class BaseSequenceManager:
-    
-    def __init__(self):
-        pass
-        
-    def ensure_sequences_exist(self, sequence_names):
-        raise NotImplementedError
-        
-    def nextval(self, sequence_name):
-        raise NotImplementedError
-        
-    def currval(self, sequence_name):
-        raise NotImplementedError
+
 
 class LmdbSequenceManager:
     
