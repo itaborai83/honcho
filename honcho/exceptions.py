@@ -3,11 +3,11 @@ class HonchoException(Exception): pass
 class WorkerError(HonchoException): pass
 class WorkerNotFoundError(WorkerError): pass
 class WorkerIsBusyError(WorkerError): pass
+class WorkerIdleError(WorkerError): pass
 class TransientWorkerError(WorkerError): pass
 
 #class WorkerNotTransientError(WorkerError): pass
 #class WorkerBusyError(WorkerError): pass
-#class WorkerIdleError(WorkerError): pass
 #class WrongWorkItemError(WorkerError): pass
 #class InvalidWorkerIdError(WorkerError): pass
 

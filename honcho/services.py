@@ -64,8 +64,10 @@ class WorkerService:
     
 class WorkItemService:
     
-    def __init__(self, collection, worker_service, time_service):
+    def __init__(self, collection, finished_collection, error_collection, worker_service, time_service):
         self.collection = collection
+        self.finished_collection = finished_collection 
+        self.error_collection = error_collection
         self.worker_service = worker_service
         self.time_service = time_service
     
@@ -80,7 +82,7 @@ class WorkItemService:
         work_item = self.collection.get(id)
         if work_item is None:
             msg = f"work item #{id} not found"
-            raise WorkerNotFoundError(msg)
+            raise WorkItemNotFoundError(msg)
         return work_item.dict() if work_item else None
     
     def delete_work_item(self, id):
@@ -103,7 +105,7 @@ class WorkItemService:
         work_items = self.collection.list(
             filter  = lambda x: x.status == WorkItemStatus.READY
         ,   top_n   = 1
-        ,   reverse = True
+        ,   reverse = False
         )
         if len(work_items) == 0:
             raise NoWorkItemsLeftError("there are no ready work items left")
@@ -118,14 +120,60 @@ class WorkItemService:
         self.collection.update(work_item)
         self.worker_service.collection.update(worker)
         
-    def finish_work_item(self, worker_id, work_item_id):
-        pass
+    def finish_work(self, worker_id):
+        worker = self.worker_service.collection.get(worker_id)
+        if worker.status == WorkerStatus.IDLE:
+            msg = f"worker #{id} is idle"
+            raise WorkerIdleError(msg)
+        
+        work_item = self.collection.get(worker.curr_work_item_id)
+        if work_item is None:
+            msg = f"work item #{id} not found"
+            raise WorkItemNotFoundError(msg)
+        
+        worker.worked_on.append(worker.curr_work_item_id)
+        worker.curr_work_item_id = None
+        worker.status = WorkerStatus.IDLE
+        worker.updated_at = self.time_service.now()
+        work_item.status = WorkItemStatus.FINISHED
+        work_item.updated_at = self.time_service.now()
+        
+        self.collection.delete(work_item.id)
+        self.finished_collection.put(work_item.id, work_item)
+        self.worker_service.collection.update(worker)
     
-    def mark_error(self, worker_id, work_item_id):
-        pass
+    def mark_error(self, worker_id, error):
+        assert error
+        worker = self.worker_service.collection.get(worker_id)
+        if worker.status == WorkerStatus.IDLE:
+            msg = f"worker #{id} is idle"
+            raise WorkerIdleError(msg)
+        
+        work_item = self.collection.get(worker.curr_work_item_id)
+        if work_item is None:
+            msg = f"work item #{id} not found"
+            raise WorkItemNotFoundError(msg)
+        
+        worker.worked_on.append(worker.curr_work_item_id)
+        worker.curr_work_item_id = None
+        worker.status = WorkerStatus.IDLE
+        worker.updated_at = self.time_service.now()
+        work_item.status = WorkItemStatus.ERROR
+        work_item.updated_at = self.time_service.now()
+        work_item.error = error
+        
+        self.collection.delete(work_item.id)
+        self.error_collection.put(work_item.id, work_item)
+        self.worker_service.collection.update(worker)
     
-    def retry_work_item(self, work_item_id):
-        pass
-    
-    def get_statistics(self):
-        pass
+    def retry_work_item(self, max_items=100, max_retries=10):
+        def filter(work_item):
+            return work_item.retry_count < max_retries
+        work_items = self.error_collection.list(top_n=max_items, filter=filter)
+        for work_item in work_items:
+            assert work_item.status == WorkItemStatus.ERROR
+            work_item.status = WorkItemStatus.READY
+            work_item.updated_at = self.time_service.now()
+            work_item.retry_count += 1
+            self.collection.update(work_item)
+        

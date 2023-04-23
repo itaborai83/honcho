@@ -96,7 +96,8 @@ class WorkItemServiceTest(unittest.TestCase):
         ,   self.sequence_mngr
         ,   self.work_item_sequence_name
         )
-        
+        self.work_item_finished_collection = MockCollection('WIDN', int_key=True)
+        self.work_item_error_collection = MockCollection('WIER', int_key=True)
         
         self.worker_service = WorkerService(
             self.worker_collection
@@ -105,6 +106,8 @@ class WorkItemServiceTest(unittest.TestCase):
         
         self.service = WorkItemService(
             self.work_item_collection
+        ,   self.work_item_finished_collection
+        ,   self.work_item_error_collection
         ,   self.worker_service
         ,   self.time_service
         )
@@ -167,3 +170,93 @@ class WorkItemServiceTest(unittest.TestCase):
         self.assertEqual(worker_data['curr_work_item_id'], 1)
         self.assertEqual(work_item_data['updated_at'], '2000-01-01 00:00:01')
         self.assertEqual(work_item_data['status'], WorkItemStatus.CHECKED_OUT)
+        
+        
+    def test_it_finishes_work_assigned_to_a_worker(self):
+        _ = self.worker_service.create_worker('test-worker')
+        _ = self.service.create_work_item(
+            name = 'test-work-item', 
+            payload = {'foo': 1, 'bar': 2}
+        )
+        self.time_service.advance()
+        self.service.assign_work(worker_id=1)
+        self.time_service.advance()
+        self.service.finish_work(worker_id=1)
+        
+        worker_data = self.worker_service.get_worker(1)
+        with self.assertRaises(WorkItemNotFoundError):
+            work_item_data = self.service.get_work_item(1)
+        work_item_data = self.service.finished_collection.get(1).dict()
+        
+        self.assertEqual(worker_data['updated_at'], '2000-01-01 00:00:02')
+        self.assertEqual(worker_data['status'], WorkerStatus.IDLE)
+        self.assertEqual(worker_data['curr_work_item_id'], None)
+        self.assertEqual(worker_data['worked_on'], [1])
+        self.assertEqual(work_item_data['updated_at'], '2000-01-01 00:00:02')
+        self.assertEqual(work_item_data['status'], WorkItemStatus.FINISHED)
+
+
+    def test_it_marks_an_error_on_a_work_assigned_to_a_worker(self):
+        _ = self.worker_service.create_worker('test-worker')
+        _ = self.service.create_work_item(
+            name = 'test-work-item', 
+            payload = {'foo': 1, 'bar': 2}
+        )
+        self.time_service.advance()
+        self.service.assign_work(worker_id=1)
+        self.time_service.advance()
+        self.service.mark_error(worker_id=1, error='there has been an error')
+        
+        worker_data = self.worker_service.get_worker(1)
+        with self.assertRaises(WorkItemNotFoundError):
+            work_item_data = self.service.get_work_item(1)
+        work_item_data = self.service.error_collection.get(1).dict()
+        
+        self.assertEqual(worker_data['updated_at'], '2000-01-01 00:00:02')
+        self.assertEqual(worker_data['status'], WorkerStatus.IDLE)
+        self.assertEqual(worker_data['curr_work_item_id'], None)
+        self.assertEqual(worker_data['worked_on'], [1])
+        self.assertEqual(work_item_data['updated_at'], '2000-01-01 00:00:02')
+        self.assertEqual(work_item_data['status'], WorkItemStatus.ERROR)
+        self.assertEqual(work_item_data['error'], 'there has been an error')
+    
+    def test_it_retries_errored_work_items(self):
+        worker_data = self.worker_service.create_worker('test-worker')
+        wi1_data = self.service.create_work_item(name = 'test-work-item-1', payload = {'foo': 1, 'bar':  2} )
+        wi2_data = self.service.create_work_item(name = 'test-work-item-2', payload = {'foo': 2, 'bar':  4} )
+        wi3_data = self.service.create_work_item(name = 'test-work-item-3', payload = {'foo': 3, 'bar':  6} )
+        wi4_data = self.service.create_work_item(name = 'test-work-item-4', payload = {'foo': 4, 'bar':  8} )
+        wi5_data = self.service.create_work_item(name = 'test-work-item-5', payload = {'foo': 5, 'bar': 10} )
+        wi6_data = self.service.create_work_item(name = 'test-work-item-6', payload = {'foo': 6, 'bar': 12} )
+        
+        self.time_service.advance()
+        self.service.assign_work(worker_id=1)
+        self.time_service.advance()
+        self.service.mark_error(worker_id=1, error='there has been an error')
+        
+        self.time_service.advance()
+        self.service.assign_work(worker_id=1)
+        self.time_service.advance()
+        self.service.mark_error(worker_id=1, error='there has been an error')
+
+        self.time_service.advance()
+        self.service.assign_work(worker_id=1)
+        self.time_service.advance()
+        self.service.mark_error(worker_id=1, error='there has been an error')
+        
+        work_items = self.service.collection.list()
+        work_items_data = list([ wi.dict() for wi in work_items ])
+        self.assertEqual(work_items_data, [wi4_data, wi5_data, wi6_data])
+        
+        self.service.retry_work_item(max_items=2)
+        
+        work_items = self.service.collection.list()
+        work_items_data = list([ wi.dict() for wi in work_items ])
+        self.assertEqual(len(work_items), 5)
+        self.assertEqual(work_items[0].id, 1)
+        self.assertEqual(work_items[0].retry_count, 1)
+        self.assertEqual(work_items[0].status, WorkItemStatus.READY)
+        self.assertEqual(work_items[1].id, 2)
+        self.assertEqual(work_items[1].retry_count, 1)
+        self.assertEqual(work_items[1].status, WorkItemStatus.READY)
+        
