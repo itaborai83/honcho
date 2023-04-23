@@ -87,18 +87,36 @@ class WorkerService:
     
 class WorkItemService:
     
-    def __init__(self, collection, finished_collection, error_collection, worker_service, time_service):
+    READY_COUNTER       = "READY_COUNTER"
+    CHECKED_OUT_COUNTER = "CHECKED_OUT_COUNTER"
+    FINISHED_COUNTER    = "FINISHED_COUNTER"
+    ERROR_COUNTER       = "ERROR_COUNTER"
+    TOTAL_COUNTER       = "TOTAL_COUNTER"
+    
+    def __init__(self, collection, finished_collection, error_collection, worker_service, counter_mngr, time_service):
         self.collection = collection
         self.finished_collection = finished_collection 
         self.error_collection = error_collection
         self.worker_service = worker_service
+        self.counter_mngr = counter_mngr
         self.time_service = time_service
     
+    def ensure_counters_exist(self):
+        self.counter_mngr.ensure_counters_exist([
+            self.READY_COUNTER
+        ,   self.CHECKED_OUT_COUNTER
+        ,   self.FINISHED_COUNTER
+        ,   self.ERROR_COUNTER
+        ,   self.TOTAL_COUNTER
+        ])
+        
     def create_work_item(self, name, payload):
         work_item = WorkItem(name=name, payload=payload)
         work_item.created_at = self.time_service.now()
         work_item.updated_at = work_item.created_at
         self.collection.insert(work_item)
+        self.counter_mngr.increase(self.READY_COUNTER)
+        self.counter_mngr.increase(self.TOTAL_COUNTER)
         return work_item.dict()
     
     def get_work_item(self, id):
@@ -115,7 +133,6 @@ class WorkItemService:
             raise WorkItemNotFoundError(msg)
         return work_item.dict() if work_item else None
         
-    
     def delete_work_item(self, id):
         work_item = self.collection.get(id)
         if work_item is None:
@@ -126,6 +143,8 @@ class WorkItemService:
             raise WorkItemIsCheckedOutError(msg)
         was_deleted = self.collection.delete(id)
         assert was_deleted
+        self.counter_mngr.decrease(self.READY_COUNTER)
+        self.counter_mngr.decrease(self.TOTAL_COUNTER)
         
     def assign_work(self, worker_id):
         worker = self.worker_service.collection.get(worker_id)
@@ -140,6 +159,7 @@ class WorkItemService:
         )
         if len(work_items) == 0:
             raise NoWorkItemsLeftError("there are no ready work items left")
+        
         work_item = work_items[0]
         
         worker.curr_work_item_id = work_item.id
@@ -150,6 +170,8 @@ class WorkItemService:
         
         self.collection.update(work_item)
         self.worker_service.collection.update(worker)
+        self.counter_mngr.decrease(self.READY_COUNTER)
+        self.counter_mngr.increase(self.CHECKED_OUT_COUNTER)
         
     def finish_work(self, worker_id):
         worker = self.worker_service.collection.get(worker_id)
@@ -172,6 +194,9 @@ class WorkItemService:
         self.collection.delete(work_item.id)
         self.finished_collection.put(work_item.id, work_item)
         self.worker_service.collection.update(worker)
+        
+        self.counter_mngr.decrease(self.CHECKED_OUT_COUNTER)
+        self.counter_mngr.increase(self.FINISHED_COUNTER)
     
     def mark_error(self, worker_id, error):
         assert error
@@ -196,6 +221,9 @@ class WorkItemService:
         self.collection.delete(work_item.id)
         self.error_collection.put(work_item.id, work_item)
         self.worker_service.collection.update(worker)
+        
+        self.counter_mngr.decrease(self.CHECKED_OUT_COUNTER)
+        self.counter_mngr.increase(self.ERROR_COUNTER)
     
     def retry_work_item(self, max_items=100, max_retries=10):
         def filter(work_item):
@@ -208,6 +236,9 @@ class WorkItemService:
             work_item.retry_count += 1
             self.error_collection.delete(work_item.id)
             self.collection.update(work_item)
+            self.counter_mngr.decrease(self.ERROR_COUNTER)
+            self.counter_mngr.increase(self.READY_COUNTER)
+            
     
     def time_out_workers(self, time_out):
         def filter(worker):
@@ -229,4 +260,19 @@ class WorkItemService:
             ,   "time_out": total_time
             })
         return timed_out
-            
+    
+    def get_counters(self):
+        ready           = self.counter_mngr.value(self.READY_COUNTER)
+        checked_out     = self.counter_mngr.value(self.CHECKED_OUT_COUNTER)
+        finished        = self.counter_mngr.value(self.FINISHED_COUNTER)
+        error           = self.counter_mngr.value(self.ERROR_COUNTER)
+        total           = self.counter_mngr.value(self.TOTAL_COUNTER)
+        assert ready + checked_out + finished + error == total
+        return {
+            'datetime'   : self.time_service.now()
+        ,   'ready'      : ready
+        ,   'checked_out': checked_out
+        ,   'finished'   : finished
+        ,   'error'      : error
+        ,   'total'      : total
+        }

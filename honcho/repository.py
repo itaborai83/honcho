@@ -374,7 +374,7 @@ class MockCollectionIterator:
         count_reached = self.count >= self.top_n
         return count_reached
         
-    def run(self):
+    def run(self, include_keys=False):
         positioned = self.start()
         if not positioned:
             return self.results
@@ -404,14 +404,16 @@ class MockCollectionIterator:
                 continue
             
             # add object to the result
-            self.results.append(value)
+            if include_keys:
+                self.results.append((key, value))
+            else:
+                self.results.append(value)
             count_reached = self.update_count()
             if count_reached:
                 bail_out = True
                 continue
         
         return self.results
-
 
 class BaseSequenceManager:
             
@@ -480,6 +482,95 @@ class MockSequenceManager(BaseSequenceManager):
         assert value is not None and value >= 0
         return value
 
+class BaseCounterManager:
+
+    def ensure_counters_exist(self, counter_names):
+        raise NotImplementedError
+        
+    def increase(self, counter_name, ammount=1):
+        raise NotImplementedError
+        
+    def decrease(self, counter_name, ammount=1):
+        raise NotImplementedError
+    
+    def value(self, counter_name):
+        raise NotImplementedError
+        
+        
+class LmdbCounterManager(BaseCounterManager):
+    
+    def __init__(self, coll_prefix='CNTR'):
+        super().__init__()
+        self.collection = LmdbCollection(coll_prefix)
+    
+    @property
+    def txn(self):
+        return self.collection.txn
+    
+    @txn.setter
+    def txn(self, txn):
+        self.collection.txn = txn
+    
+    def ensure_counters_exist(self, counter_names):
+        assert isinstance(counter_names, list)
+        for counter_name in counter_names:
+            value = self.collection.get(counter_name)
+            if value is None:
+                self.collection.put(counter_name, 0)
+
+    def increase(self, counter_name, ammount=1):
+        assert ammount > 0
+        value = self.collection.get(counter_name)
+        assert value is not None and value >= 0, f"counter '{counter_name}' does not exist"
+        self.collection.put(counter_name, value + ammount)
+        return value + ammount
+    
+    def decrease(self, counter_name, ammount=1):
+        assert ammount > 0
+        value = self.collection.get(counter_name)
+        assert value is not None, f"counter '{counter_name}' does not exist"
+        assert value > 0, f"can not decrease counter '{counter_name}'"
+        self.collection.put(counter_name, value - ammount)
+        return value - ammount
+
+    def value(self, counter_name):
+        value = self.collection.get(counter_name)
+        assert value is not None and value >= 0
+        return value
+
+class MockCounterManager(BaseCounterManager):
+    
+    def __init__(self):
+        super().__init__()
+        self.collection = {}
+        
+    def ensure_counters_exist(self, counter_names):
+        assert isinstance(counter_names, list)
+        for counter_name in counter_names:
+            value = self.collection.get(counter_name)
+            if value is None:
+                self.collection[counter_name] = 0
+        
+    def increase(self, counter_name, ammount=1):
+        assert ammount > 0
+        value = self.collection.get(counter_name)
+        assert value is not None and value >= 0, f"counter '{counter_name}' does not exist"
+        self.collection[counter_name] = value + ammount
+        return value + ammount
+        
+    def decrease(self, counter_name, ammount=1):
+        assert ammount > 0
+        value = self.collection.get(counter_name)
+        assert value is not None, f"counter '{counter_name}' does not exist"
+        assert value > 0, f"can not decrease counter '{counter_name}'"
+        self.collection[counter_name] = value - ammount
+        return value - ammount
+        
+    def value(self, counter_name):
+        value = self.collection.get(counter_name)
+        assert value is not None and value >= 0
+        return value
+        
 class AutoIncrementCollection:
 
     def __init__(self, collection, sequence_mngr, sequence_name):

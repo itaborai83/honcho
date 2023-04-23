@@ -114,7 +114,7 @@ class MockCollectionTest(unittest.TestCase, CommonCollectionTests):
         
 class CommonSequenceManagerTests:
 
-    def test_sequence_creation(self):
+    def test_sequences(self):
         with self.assertRaises(AssertionError):
             self.sequence_mngr.currval('test-seqn-1')
         with self.assertRaises(AssertionError):
@@ -166,6 +166,63 @@ class TestMockSequenceManager(unittest.TestCase, CommonSequenceManagerTests):
         
     def tearDown(self):
         self.sequence_mngr = None
+
+
+class CommonCounterManagerTests:
+
+    def test_counter(self):
+        with self.assertRaises(AssertionError):
+            self.counter_mngr.value('test-counter-1')
+        with self.assertRaises(AssertionError):
+            self.counter_mngr.value('test-counter-2')
+        
+        self.counter_mngr.ensure_counters_exist(['test-counter-1', 'test-counter-2'])
+        
+        self.assertEqual(self.counter_mngr.value('test-counter-1'), 0)
+        self.assertEqual(self.counter_mngr.value('test-counter-2'), 0)
+        
+        self.assertEqual(self.counter_mngr.increase('test-counter-1'), 1)
+        self.assertEqual(self.counter_mngr.increase('test-counter-2'), 1)
+        
+        self.assertEqual(self.counter_mngr.value('test-counter-1'), 1)
+        self.assertEqual(self.counter_mngr.value('test-counter-2'), 1)
+        
+        self.counter_mngr.ensure_counters_exist(['test-counter-1', 'test-counter-2'])
+        
+        self.assertEqual(self.counter_mngr.increase('test-counter-1', ammount=2), 3)
+        self.assertEqual(self.counter_mngr.increase('test-counter-2', 2), 3)
+        self.assertEqual(self.counter_mngr.increase('test-counter-2', 2), 5)
+        self.assertEqual(self.counter_mngr.increase('test-counter-1'), 4)
+
+class TestLmdbCounterManager(unittest.TestCase, CommonCounterManagerTests):
+
+    REPO_PATH      = 'DATA/unittest-repo.lmdb'
+    MAP_SIZE       = 1024 * 1024
+    MAX_SPARE_TXNS = 1000
+    
+    def setUp(self):
+        self.env = lmdb.open(
+            self.REPO_PATH
+        ,   map_size        = self.MAP_SIZE
+        ,   max_spare_txns  = self.MAX_SPARE_TXNS
+        )
+        self.env.reader_check()
+        self.counter_mngr = LmdbCounterManager()
+        self.counter_mngr.txn = self.env.begin(write=True)
+        
+    def tearDown(self):
+        self.counter_mngr.txn.abort()
+        self.env.close()
+        shutil.rmtree(self.REPO_PATH, ignore_errors=False)
+
+class TestMockSequenceManager(unittest.TestCase, CommonCounterManagerTests):
+    
+    def setUp(self):
+        self.counter_mngr = MockCounterManager()
+        
+    def tearDown(self):
+        self.counter_mngr = None
+
 
 class CommoWorkItemCollectionTests:
     

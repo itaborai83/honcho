@@ -77,6 +77,7 @@ class WorkItemServiceTest(unittest.TestCase):
 
     def setUp(self):    
         self.time_service = MockTimeService()
+        self.counter_mngr = MockCounterManager()
         self.sequence_mngr = MockSequenceManager()
         self.worker_sequence_name = 'SQ_WORKER'
         self.work_item_sequence_name = 'SQ_WORK_ITEM'
@@ -105,12 +106,15 @@ class WorkItemServiceTest(unittest.TestCase):
         )
         
         self.service = WorkItemService(
-            self.work_item_collection
-        ,   self.work_item_finished_collection
-        ,   self.work_item_error_collection
-        ,   self.worker_service
-        ,   self.time_service
+            collection          = self.work_item_collection
+        ,   finished_collection = self.work_item_finished_collection
+        ,   error_collection    = self.work_item_error_collection
+        ,   worker_service      = self.worker_service
+        ,   counter_mngr        = self.counter_mngr
+        ,   time_service        = self.time_service
         )
+        
+        self.service.ensure_counters_exist()
         
     def tearDown(self):
         pass
@@ -122,6 +126,7 @@ class WorkItemServiceTest(unittest.TestCase):
         )
         #pprint(work_item_data)
         same_work_item_data = self.service.get_work_item(1)
+        counters = self.service.get_counters()
         
         self.assertEqual(work_item_data, same_work_item_data)
         self.assertEqual(work_item_data['created_at' ],  '2000-01-01 00:00:00')
@@ -132,6 +137,7 @@ class WorkItemServiceTest(unittest.TestCase):
         self.assertEqual(work_item_data['retry_count'],  0)
         self.assertEqual(work_item_data['status'     ],  WorkItemStatus.READY)
         self.assertEqual(work_item_data['updated_at' ],  '2000-01-01 00:00:00')
+        self.assertEqual(counters['ready'], 1)
         
     def test_it_deletes_a_work_item(self):
         with self.assertRaises(WorkItemNotFoundError):
@@ -141,18 +147,21 @@ class WorkItemServiceTest(unittest.TestCase):
             payload = {'foo': 1, 'bar': 2}
         )
         self.service.delete_work_item(1)
+        counters = self.service.get_counters()
+        self.assertEqual(counters['ready'], 0)
     
     def test_it_fails_to_delete_a_checked_out_work_item(self):
+        _ = self.worker_service.create_worker('test-worker')
         _ = self.service.create_work_item(
             name = 'test-work-item', 
             payload = {'foo': 1, 'bar': 2}
         )
-        work_item = self.work_item_collection.get(1)
-        work_item.status = WorkItemStatus.CHECKED_OUT
-        self.work_item_collection.update(work_item)
+        self.service.assign_work(worker_id=1)
         with self.assertRaises(WorkItemIsCheckedOutError):
             self.service.delete_work_item(1)
-    
+        counters = self.service.get_counters()
+        self.assertEqual(counters['checked_out'], 1)
+        
     def test_it_assigns_work_to_a_worker(self):
         _ = self.worker_service.create_worker('test-worker')
         _ = self.service.create_work_item(
@@ -165,12 +174,13 @@ class WorkItemServiceTest(unittest.TestCase):
         
         worker_data = self.worker_service.get_worker(1)
         work_item_data = self.service.get_work_item(1)
+        counters = self.service.get_counters()
         self.assertEqual(worker_data['updated_at'], '2000-01-01 00:00:01')
         self.assertEqual(worker_data['status'], WorkerStatus.BUSY)
         self.assertEqual(worker_data['curr_work_item_id'], 1)
         self.assertEqual(work_item_data['updated_at'], '2000-01-01 00:00:01')
         self.assertEqual(work_item_data['status'], WorkItemStatus.CHECKED_OUT)
-        
+        self.assertEqual(counters['checked_out'], 1)
         
     def test_it_finishes_work_assigned_to_a_worker(self):
         _ = self.worker_service.create_worker('test-worker')
@@ -187,6 +197,7 @@ class WorkItemServiceTest(unittest.TestCase):
         with self.assertRaises(WorkItemNotFoundError):
             work_item_data = self.service.get_work_item(1)
         work_item_data = self.service.finished_collection.get(1).dict()
+        counters = self.service.get_counters()
         
         self.assertEqual(worker_data['updated_at'], '2000-01-01 00:00:02')
         self.assertEqual(worker_data['status'], WorkerStatus.IDLE)
@@ -194,6 +205,7 @@ class WorkItemServiceTest(unittest.TestCase):
         self.assertEqual(worker_data['worked_on'], [1])
         self.assertEqual(work_item_data['updated_at'], '2000-01-01 00:00:02')
         self.assertEqual(work_item_data['status'], WorkItemStatus.FINISHED)
+        self.assertEqual(counters['finished'], 1)
 
 
     def test_it_marks_an_error_on_a_work_assigned_to_a_worker(self):
@@ -211,6 +223,7 @@ class WorkItemServiceTest(unittest.TestCase):
         with self.assertRaises(WorkItemNotFoundError):
             work_item_data = self.service.get_work_item(1)
         work_item_data = self.service.error_collection.get(1).dict()
+        counters = self.service.get_counters()
         
         self.assertEqual(worker_data['updated_at'], '2000-01-01 00:00:02')
         self.assertEqual(worker_data['status'], WorkerStatus.IDLE)
@@ -219,6 +232,7 @@ class WorkItemServiceTest(unittest.TestCase):
         self.assertEqual(work_item_data['updated_at'], '2000-01-01 00:00:02')
         self.assertEqual(work_item_data['status'], WorkItemStatus.ERROR)
         self.assertEqual(work_item_data['error'], 'there has been an error')
+        self.assertEqual(counters['error'], 1)
     
     def test_it_retries_errored_work_items(self):
         worker_data = self.worker_service.create_worker('test-worker')
@@ -252,6 +266,7 @@ class WorkItemServiceTest(unittest.TestCase):
         
         work_items = self.service.collection.list()
         work_items_data = list([ wi.dict() for wi in work_items ])
+        counters = self.service.get_counters()
         self.assertEqual(len(work_items), 5)
         self.assertEqual(work_items[0].id, 1)
         self.assertEqual(work_items[0].retry_count, 1)
@@ -259,6 +274,9 @@ class WorkItemServiceTest(unittest.TestCase):
         self.assertEqual(work_items[1].id, 2)
         self.assertEqual(work_items[1].retry_count, 1)
         self.assertEqual(work_items[1].status, WorkItemStatus.READY)
+        self.assertEqual(counters['ready'], 5)
+        self.assertEqual(counters['error'], 1)
+        
         
     def test_it_times_out_workers(self):
         worker_data = self.worker_service.create_worker('test-worker')
@@ -283,6 +301,9 @@ class WorkItemServiceTest(unittest.TestCase):
         self.assertEqual(worker_data["worked_on"], [1])
 
         work_item_data = self.service.get_errored_work_item(1)
+        counters = self.service.get_counters()
+        counters = self.service.get_counters()
         self.assertEqual(work_item_data["id"], 1)
         self.assertEqual(work_item_data["status"], WorkItemStatus.ERROR)
         self.assertEqual(work_item_data["error"], "worker #1 has been timed out while working on on work item #1")
+        self.assertEqual(counters['error'], 1)
