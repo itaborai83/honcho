@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta
 
 from honcho.models import *
@@ -6,17 +7,35 @@ from honcho.services import *
 from honcho.exceptions import *
 import honcho.util as util
 
-class TimeService:
+class BaseTimeService:
+
+    def now():
+        raise NotImplementedError
+        
+    def sleep(self, seconds):
+        raise NotImplementedError
+    
+    def subtract(self, dt1, dt2):
+        dt1_parsed = util.parse_datetime(dt1)
+        dt2_parsed = util.parse_datetime(dt2)
+        delta = dt1_parsed - dt2_parsed
+        return int(delta.total_seconds())
+
+class TimeService(BaseTimeService):
     
     def now():
         return util.now()
-
-class MockTimeService:
+    
+    def sleep(self, seconds):
+        time.sleep(seconds)
+        
+class MockTimeService(BaseTimeService):
     
     INITIAL_DATETIME = datetime(2000, 1, 1, 0, 0, 0)
     TIME_STEP = timedelta(0, 1)
     
     def __init__(self, initial=None):
+        super().__init__()
         if initial is None:
             initial = self.INITIAL_DATETIME
         self.current = initial
@@ -24,7 +43,11 @@ class MockTimeService:
     def now(self):
         return util.unparse_datetime(self.current)
     
-    def advance(self):
+    def sleep(self, seconds):
+        assert seconds >= 0
+        self.current = self.current + timedelta(0, seconds)
+        
+    def advance(self, seconds=None):
         self.current = self.current + self.TIME_STEP
 
 class WorkerService:
@@ -58,8 +81,8 @@ class WorkerService:
         was_deleted = self.collection.delete(id)
         assert was_deleted
         
-    def list_workers(self, reverse=False):
-        workers = self.collection.list(reverse=reverse)
+    def list_workers(self, filter=None, reverse=False):
+        workers = self.collection.list(filter=filter, reverse=reverse)
         return list([ w.dict() for w in workers ])
     
 class WorkItemService:
@@ -84,6 +107,14 @@ class WorkItemService:
             msg = f"work item #{id} not found"
             raise WorkItemNotFoundError(msg)
         return work_item.dict() if work_item else None
+    
+    def get_errored_work_item(self, id):
+        work_item = self.error_collection.get(id)
+        if work_item is None:
+            msg = f"work item #{id} not found"
+            raise WorkItemNotFoundError(msg)
+        return work_item.dict() if work_item else None
+        
     
     def delete_work_item(self, id):
         work_item = self.collection.get(id)
@@ -175,5 +206,27 @@ class WorkItemService:
             work_item.status = WorkItemStatus.READY
             work_item.updated_at = self.time_service.now()
             work_item.retry_count += 1
+            self.error_collection.delete(work_item.id)
             self.collection.update(work_item)
-        
+    
+    def time_out_workers(self, time_out):
+        def filter(worker):
+            return worker.status == WorkerStatus.BUSY
+        workers_data = self.worker_service.list_workers(filter=filter)
+        now = self.time_service.now()
+        timed_out = []
+        for worker_data in workers_data:
+            total_time = self.time_service.subtract(now, worker_data['updated_at'])
+            if total_time < time_out:
+                continue
+            worker_id = worker_data["id"]
+            work_item_id = worker_data["curr_work_item_id"]
+            error = f"worker #{worker_id} has been timed out while working on on work item #{work_item_id}"
+            self.mark_error(worker_id, error)
+            timed_out.append({
+                "worker_id": worker_id
+            ,   "work_item_id": work_item_id
+            ,   "time_out": total_time
+            })
+        return timed_out
+            

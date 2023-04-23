@@ -260,3 +260,29 @@ class WorkItemServiceTest(unittest.TestCase):
         self.assertEqual(work_items[1].retry_count, 1)
         self.assertEqual(work_items[1].status, WorkItemStatus.READY)
         
+    def test_it_times_out_workers(self):
+        worker_data = self.worker_service.create_worker('test-worker')
+        work_item_data = self.service.create_work_item(name = 'test-work-ite1', payload = {'foo': 1, 'bar':  2} )
+        self.time_service.advance()
+        self.service.assign_work(worker_id=1)
+        self.time_service.advance()
+        
+        time_out_results = self.service.time_out_workers(time_out=30)
+        self.assertEqual(time_out_results, [])
+        
+        self.time_service.sleep(30)
+        time_out_results = self.service.time_out_workers(time_out=30)
+        self.assertEqual(len(time_out_results), 1)
+        self.assertEqual(time_out_results[0]["worker_id"], 1)
+        self.assertEqual(time_out_results[0]["work_item_id"], 1)
+        self.assertEqual(time_out_results[0]["time_out"], 31)
+        
+        worker_data = self.worker_service.get_worker(1)
+        self.assertEqual(worker_data["status"], WorkerStatus.IDLE)
+        self.assertEqual(worker_data["curr_work_item_id"], None)
+        self.assertEqual(worker_data["worked_on"], [1])
+
+        work_item_data = self.service.get_errored_work_item(1)
+        self.assertEqual(work_item_data["id"], 1)
+        self.assertEqual(work_item_data["status"], WorkItemStatus.ERROR)
+        self.assertEqual(work_item_data["error"], "worker #1 has been timed out while working on on work item #1")
