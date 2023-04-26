@@ -16,11 +16,11 @@ class FileEnqueuerApp:
     
     VERSION = (0, 0, 0)
     
-    def __init__(self, db_path, worker_name, force):
+    def __init__(self, db_path, worker_name, force, retry):
         self.pid = os.getpid()
         self.db_path = db_path
         self.force = force
-        self.retry = True
+        self.retry = retry
         self.worker_name = worker_name
         self.honcho = None
         self.worker_id = None
@@ -73,7 +73,17 @@ class FileEnqueuerApp:
         except:
             self.honcho.abort_transaction()
             raise
-
+    
+    def retry_work_items(self):
+        logger.info(f"retrying errored work items")
+        try:
+            self.honcho.begin_transaction(write=True)
+            self.honcho.work_item_service.retry_work_item()
+            self.honcho.commit_transaction()
+        except:
+            self.honcho.abort_transaction()
+            raise
+    
     def assign_work(self):
         logger.info(f"assigning work to '{self.worker_name}'")
         try:
@@ -119,6 +129,7 @@ class FileEnqueuerApp:
         self.create_honcho()
         self.boot_worker()
         while True:
+            self.retry_work_items()
             self.assign_work()
             self.process_work()
             #time.sleep(10)
@@ -130,6 +141,7 @@ if __name__ == '__main__':
     parser.add_argument('db_path', type=str, help='database path')
     parser.add_argument('worker_name', type=str, help='worker name')
     parser.add_argument('--force', action='store_true', help='force busy worker to start')
+    parser.add_argument('--retry', action='store_true', help='retry work items')
     args = parser.parse_args()
-    app = FileEnqueuerApp(args.db_path, args.worker_name, args.force)
+    app = FileEnqueuerApp(args.db_path, args.worker_name, args.force, args.retry)
     app.run()
