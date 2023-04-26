@@ -149,8 +149,10 @@ class LmdbCollection(BaseCollection):
             positioned = cursor.prev()
             assert positioned
             max_key_buf = cursor.key()
-            assert max_key_buf.startswith(self.coll_prefix)
-        
+            if not max_key_buf.startswith(self.coll_prefix):
+                max_key_buf = min_key_buf
+            #assert max_key_buf.startswith(self.coll_prefix), (key_buf, self.coll_prefix, max_key_buf)
+
         else:
             # key range not affected by the deletion of an intermediate value
             return
