@@ -187,6 +187,8 @@ class WorkItemService:
         self.counter_mngr.decrease(config.READY_COUNTER)
         self.counter_mngr.increase(config.CHECKED_OUT_COUNTER)
         
+        return work_item.dict()
+        
     def finish_work(self, worker_id):
         worker = self.worker_service.collection.get(worker_id)
         if worker.status == WorkerStatus.IDLE:
@@ -239,7 +241,7 @@ class WorkItemService:
         self.counter_mngr.decrease(config.CHECKED_OUT_COUNTER)
         self.counter_mngr.increase(config.ERROR_COUNTER)
     
-    def retry_work_item(self, max_items=100, max_retries=10):
+    def retry_work_item(self, max_items=5000, max_retries=1000):
         def filter(work_item):
             return work_item.retry_count < max_retries
         work_items = self.error_collection.list(top_n=max_items, filter=filter)
