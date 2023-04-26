@@ -129,3 +129,4 @@ dmypy.json
 .pyre/
 
 DATA/
+./test_apps/filecopy/DATA/

@@ -10,10 +10,10 @@ from honcho.exceptions import *
 import honcho.util as util
 import honcho.config as config
 
-class Application:
+class Honcho:
 
     def __init__(self, db_path):
-        self.logger                         = util.get_logger('application')
+        self.logger                         = util.get_logger('honcho')
         self.db_path                        = db_path
         self.env                            = None
         self.txn                            = None
@@ -107,7 +107,7 @@ class Application:
     def begin_transaction(self, write=False, reader_check=False):
         self.logger.info('opening transaction')
         assert self.txn is None
-        self.txn = self.env.begin(write=True)
+        self.txn = self.env.begin(write=write)
         self.worker_service.txn = self.txn
         self.work_item_service.txn = self.txn
         if reader_check:

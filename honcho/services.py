@@ -24,7 +24,7 @@ class BaseTimeService:
 
 class TimeService(BaseTimeService):
     
-    def now():
+    def now(self):
         return util.now()
     
     def sleep(self, seconds):
