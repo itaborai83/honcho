@@ -4,17 +4,26 @@ import os.path
 import argparse
 import shutil
 import time
+import json
+import requests
+import requests.auth
 from honcho import Honcho
 import honcho.util as util
 import honcho.models as models
 
 assert os.environ[ 'PYTHONUTF8' ] == "1"
 
-logger = util.get_logger('enqueuefiles')
+logger = util.get_logger('poster')
 
-class FileEnqueuerApp:
+class FilePosterApp:
     
     VERSION = (0, 0, 0)
+    ERROR_WAIT_TIME = 5
+    JSON_CONSTANT_MAP = {
+        '-Infinity' : float('-Infinity')
+    ,   'Infinity'  : float('Infinity')
+    ,   'NaN'       : None,
+    }
     
     def __init__(self, db_path, worker_name, force, retry):
         self.pid = os.getpid()
@@ -72,6 +81,7 @@ class FileEnqueuerApp:
             self.honcho.commit_transaction()
         except:
             self.honcho.abort_transaction()
+            time.sleep(self.ERROR_WAIT_TIME)
             raise
     
     def retry_work_items(self):
@@ -103,11 +113,28 @@ class FileEnqueuerApp:
         error = None
         try:
             logger.info(self.work_item)
-            src = self.work_item['payload']['file']
-            filename = os.path.basename(src)
-            dst_dir = self.work_item['payload']['output']
-            dst = os.path.join(dst_dir, filename)
-            shutil.copyfile(src, dst)
+            file     = self.work_item['payload']['file']
+            method   = self.work_item['payload']['method']
+            url      = self.work_item['payload']['url']
+            user     = self.work_item['payload']['user']
+            password = self.work_item['payload']['password']
+            
+            with open(file) as fh:
+                data = json.load(fh, parse_constant=lambda c: self.JSON_CONSTANT_MAP[c])
+                
+            assert method in ('POST', 'PUT', 'DELETE')
+            
+            auth = requests.auth.HTTPBasicAuth(user, password)
+            if method == 'POST':
+                r = requests.post(url=url, json=data, auth=auth, verify=False)
+            elif method == 'PUT':
+                r = requests.put(url=url, json=data, auth=auth, verify=False)
+            else: # method == 'DELETE':
+                r = requests.delete(url=url, json=data, auth=auth, verify=False)
+            r.raise_for_status()
+            resp_contents = r.json()
+            logger.info(resp_contents)
+            
         except Exception as e:
             msg = f"an error ocurred while processing work item #{self.work_item_id}"
             logger.exception(msg)
@@ -129,7 +156,8 @@ class FileEnqueuerApp:
         self.create_honcho()
         self.boot_worker()
         while True:
-            self.retry_work_items()
+            if self.retry:
+                self.retry_work_items()
             self.assign_work()
             self.process_work()
             #time.sleep(10)
@@ -143,5 +171,5 @@ if __name__ == '__main__':
     parser.add_argument('--force', action='store_true', help='force busy worker to start')
     parser.add_argument('--retry', action='store_true', help='retry work items')
     args = parser.parse_args()
-    app = FileEnqueuerApp(args.db_path, args.worker_name, args.force, args.retry)
+    app = FilePosterApp(args.db_path, args.worker_name, args.force, args.retry)
     app.run()
